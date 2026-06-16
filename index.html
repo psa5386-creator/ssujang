@@ -3604,7 +3604,7 @@ const DOC_TAB_MAP = {
   schedule: 'schedule',
 };
 
-// docType별 읽지 않은 doc 수 계산
+// docType별 읽지 않은 doc의 body item 수 계산
 function countUnseenDocs(docType) {
   const seen = getSeenIds();
   let count = 0;
@@ -3612,7 +3612,10 @@ function countUnseenDocs(docType) {
     if (!proj._isProject) return;
     const sub = proj._noteRef?.subFolders?.[docType];
     (sub?.children || []).forEach(doc => {
-      if (doc.id && !seen.has(doc.id)) count++;
+      if (doc.id && !seen.has(doc.id)) {
+        // body 아이템 수 기준, body 없으면 1로 카운트
+        count += (doc.body?.length || 1);
+      }
     });
   });
   return count;
@@ -4316,35 +4319,29 @@ if (_savedData && _savedData.folderTree) {
 function getCalDayData(dateKey) {
   const result = { todo: [], minutes: [], memo: [], schedule: [] };
 
-  // due 문자열("6/20 오후 6:00", "2026-06-20 18:00" 등)에서 날짜키(YYYY-MM-DD) 추출
+  // due 문자열에서 YYYY-MM-DD 추출
   function parseDueDate(due) {
     if (!due) return '';
-    // YYYY-MM-DD 형식
     const iso = due.match(/^(\d{4}-\d{2}-\d{2})/);
     if (iso) return iso[1];
-    // M/DD 또는 MM/DD 형식
     const slash = due.match(/^(\d{1,2})\/(\d{1,2})/);
     if (slash) {
       const y = new Date().getFullYear();
-      const m = slash[1].padStart(2, '0');
-      const d = slash[2].padStart(2, '0');
-      return `${y}-${m}-${d}`;
+      return `${y}-${slash[1].padStart(2,'0')}-${slash[2].padStart(2,'0')}`;
     }
     return '';
   }
 
-  // due 문자열에서 시간(HH:mm 24h) 추출
+  // due 문자열에서 HH:mm(24h) 추출
   function parseDueTime(due) {
     if (!due) return '';
-    // HH:mm 형식 (24h)
     const hhmm = due.match(/(\d{1,2}):(\d{2})(?!\d)/);
     if (!hhmm) return '';
     let h = parseInt(hhmm[1]);
     const m = hhmm[2];
-    // 오후/PM 처리
     if (/(오후|PM|pm)/i.test(due) && h < 12) h += 12;
     if (/(오전|AM|am)/i.test(due) && h === 12) h = 0;
-    return `${String(h).padStart(2, '0')}:${m}`;
+    return `${String(h).padStart(2,'0')}:${m}`;
   }
 
   folderTree.children.forEach(proj => {
@@ -4353,23 +4350,37 @@ function getCalDayData(dateKey) {
     Object.entries(subs).forEach(([type, folder]) => {
       if (!result[type]) return;
       (folder.children || []).forEach(doc => {
-        const created  = (doc.createdAt || '').slice(0, 10);
-        const dt       = (doc.meta?.datetime || '').slice(0, 10);
-        const dueRaw   = doc.meta?.due || '';
-        const dueDate  = parseDueDate(dueRaw);
+        // doc 자체 날짜 (회의록·메모는 createdAt 기준)
+        const docCreated = (doc.createdAt || '').slice(0, 10);
 
-        const matches  = created === dateKey || dt === dateKey || dueDate === dateKey;
-        if (!matches) return;
-
-        let time = '';
-        if (doc.meta?.datetime) {
-          // 일정: "2026-06-11 15:00" → "15:00"
-          time = doc.meta.datetime.slice(11, 16);
-        } else if (dueRaw) {
-          // 할일: "6/20 오후 6:00" → "18:00"
-          time = parseDueTime(dueRaw);
+        if (type === 'todo') {
+          // 할일: body 안 각 item의 meta.due 기준
+          (doc.body || []).forEach(item => {
+            const dueDate = parseDueDate(item.meta?.due || '');
+            if (dueDate === dateKey) {
+              result.todo.push({
+                title: item.text || doc.name || '(제목 없음)',
+                time:  parseDueTime(item.meta?.due || ''),
+              });
+            }
+          });
+        } else if (type === 'schedule') {
+          // 일정: body 안 각 item의 meta.datetime 기준
+          (doc.body || []).forEach(item => {
+            const dt = (item.meta?.datetime || '').slice(0, 10);
+            if (dt === dateKey) {
+              result.schedule.push({
+                title: item.text || doc.name || '(제목 없음)',
+                time:  (item.meta?.datetime || '').slice(11, 16),
+              });
+            }
+          });
+        } else {
+          // 회의록·메모: doc createdAt 기준, 제목은 doc.name
+          if (docCreated === dateKey) {
+            result[type].push({ title: doc.name || '(제목 없음)', time: '' });
+          }
         }
-        result[type].push({ title: doc.name || '(제목 없음)', time });
       });
     });
   });
