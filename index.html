@@ -40,8 +40,8 @@
   link.href  = url;
   document.currentScript.after(link);
 
-  // Service Worker 등록 (PWA 설치 필수 조건)
-  if ('serviceWorker' in navigator) {
+  // Service Worker 등록 (PWA 설치 필수 조건, https:// 에서만 동작)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     const swCode = `
 self.addEventListener('fetch', function(e) {
   e.respondWith(fetch(e.request).catch(() => new Response('', { status: 408 })));
@@ -705,6 +705,75 @@ input, textarea { user-select: text; }
   background: var(--input-bg);
   color: var(--text-secondary);
   font-weight: 500;
+}
+/* 달력 날짜별 타입 배지 */
+.cal-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px 2px 3px;
+  justify-content: center;
+}
+.cal-type-badge {
+  font-family: var(--font-ui);
+  font-size: 8px;
+  border-radius: 2px;
+  padding: 0px 3px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* 달력 프리뷰 팝업 */
+.cal-preview {
+  position: fixed;
+  z-index: 9999;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.13);
+  padding: 8px 0;
+  min-width: 180px;
+  max-width: 240px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.cal-preview.visible { opacity: 1; }
+.cal-preview-section {
+  padding: 2px 0;
+}
+.cal-preview-type {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 500;
+  padding: 2px 12px 1px;
+  opacity: 0.7;
+}
+.cal-preview-item {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-primary);
+  padding: 2px 12px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  line-height: 1.4;
+}
+.cal-preview-time {
+  font-size: 10px;
+  color: var(--text-hint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cal-preview-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cal-preview-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 0;
 }
 .home-resizer {
   flex-shrink: 0;
@@ -2126,6 +2195,8 @@ function saveToStorage() {
       usageStore: window._usageStore || { days: {} },
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // 홈 화면 달력 배지 실시간 반영
+    if (typeof buildCal === 'function') buildCal(calYear, calMonth);
   } catch(e) {
     console.warn('ssujang save error:', e);
   }
@@ -2406,6 +2477,37 @@ function buildCal(year, month) {
           td.appendChild(dot);
         }
 
+        // 타입 배지 + 프리뷰 (folderTree/calPreview 초기화 전엔 스킵)
+        if (typeof folderTree !== 'undefined' && folderTree && typeof _calPreview !== 'undefined') {
+        const dayData = getCalDayData(dateKey);
+        const TYPE_INFO = [
+          { key: 'todo',     label: '할일',   color: '#ED5565' },
+          { key: 'schedule', label: '일정',   color: '#1a9ec9' },
+          { key: 'memo',     label: '메모',   color: '#d4a400' },
+          { key: 'minutes',  label: '회의록', color: '#2aaa88' },
+        ];
+        const hasAny = TYPE_INFO.some(t => dayData[t.key]?.length);
+        if (hasAny) {
+          const badgeRow = document.createElement('div');
+          badgeRow.className = 'cal-badges';
+          TYPE_INFO.forEach(({ key, label, color }) => {
+            const cnt = dayData[key]?.length || 0;
+            if (!cnt) return;
+            const b = document.createElement('span');
+            b.className = 'cal-type-badge';
+            b.textContent = label + cnt;
+            b.style.cssText = `border:1px solid ${color};color:${color};`;
+            b.addEventListener('mouseenter', (e) => {
+              e.stopPropagation();
+              _calPreview.show(dayData, b.getBoundingClientRect());
+            });
+            b.addEventListener('mouseleave', () => _calPreview.hide());
+            badgeRow.appendChild(b);
+          });
+          td.appendChild(badgeRow);
+        }
+        } // end folderTree guard
+
         const clickDate = date;
         td.addEventListener('click', () => {
           const d = getNoteDate(activeNoteTab);
@@ -2426,9 +2528,8 @@ function updateCalTitle() {
 }
 
 buildCalHead();
-buildCal(calYear, calMonth);
 updateCalTitle();
-loadHolidays(); // Google Calendar API로 공휴일 동적 로드
+// buildCal은 folderTree 초기화 후 호출 (아래 "folderTree 준비 완료" 섹션에서 실행)
 
 document.getElementById('cal-prev')?.addEventListener('click', () => {
   calMonth--; if (calMonth < 0) { calMonth = 11; calYear--; }
@@ -4211,6 +4312,105 @@ if (_savedData && _savedData.folderTree) {
   folderTree  = makeFolder('폴더', { children: [proj1.project, proj2.project, folderTrash] });
 }
 
+// ── 달력 날짜별 데이터 수집 (folderTree 초기화 후 선언) ──
+function getCalDayData(dateKey) {
+  const result = { todo: [], minutes: [], memo: [], schedule: [] };
+  folderTree.children.forEach(proj => {
+    if (!proj._isProject) return;
+    const subs = proj._noteRef?.subFolders || {};
+    Object.entries(subs).forEach(([type, folder]) => {
+      if (!result[type]) return;
+      (folder.children || []).forEach(doc => {
+        const created = (doc.createdAt || '').slice(0, 10);
+        const dt      = (doc.meta?.datetime || '').slice(0, 10);
+        const due     = (doc.meta?.due || '');
+        const matches = created === dateKey || dt === dateKey ||
+          (due && due.includes(dateKey.slice(5).replace('-', '/')));
+        if (matches) {
+          const time = doc.meta?.datetime
+            ? doc.meta.datetime.slice(11, 16)
+            : (doc.createdAt || '').slice(11, 16) || '';
+          result[type].push({ title: doc.name || '(제목 없음)', time });
+        }
+      });
+    });
+  });
+  return result;
+}
+
+// ── 달력 프리뷰 팝업 싱글턴 ──
+const _calPreview = (() => {
+  const el = document.createElement('div');
+  el.className = 'cal-preview';
+  document.body.appendChild(el);
+  let _hideTimer = null;
+
+  const TYPE_INFO = [
+    { key: 'todo',     label: '할일',   color: '#ED5565' },
+    { key: 'schedule', label: '일정',   color: '#1a9ec9' },
+    { key: 'memo',     label: '메모',   color: '#d4a400' },
+    { key: 'minutes',  label: '회의록', color: '#2aaa88' },
+  ];
+
+  function show(data, anchorRect) {
+    clearTimeout(_hideTimer);
+    el.innerHTML = '';
+    let hasSomething = false;
+    let firstSection = true;
+    TYPE_INFO.forEach(({ key, label, color }) => {
+      const items = data[key];
+      if (!items || !items.length) return;
+      hasSomething = true;
+      if (!firstSection) {
+        const div = document.createElement('div');
+        div.className = 'cal-preview-divider';
+        el.appendChild(div);
+      }
+      firstSection = false;
+      const typeRow = document.createElement('div');
+      typeRow.className = 'cal-preview-type';
+      typeRow.style.color = color;
+      typeRow.textContent = label;
+      el.appendChild(typeRow);
+      items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'cal-preview-item';
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'cal-preview-time';
+        timeSpan.textContent = item.time || '—';
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'cal-preview-title';
+        titleSpan.textContent = item.title;
+        row.appendChild(timeSpan);
+        row.appendChild(titleSpan);
+        el.appendChild(row);
+      });
+    });
+    if (!hasSomething) { hide(); return; }
+    el.style.opacity = '0';
+    el.style.display = 'block';
+    const pw = el.offsetWidth;
+    const ph = el.offsetHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = anchorRect.left + anchorRect.width / 2 - pw / 2;
+    let top  = anchorRect.bottom + 4;
+    if (left + pw > vw - 8) left = vw - pw - 8;
+    if (left < 8) left = 8;
+    if (top + ph > vh - 8) top = anchorRect.top - ph - 4;
+    el.style.left = left + 'px';
+    el.style.top  = top  + 'px';
+    el.classList.add('visible');
+    el.style.opacity = '';
+  }
+
+  function hide() {
+    _hideTimer = setTimeout(() => el.classList.remove('visible'), 80);
+  }
+
+  return { show, hide };
+})();
+
 // 활성 노트의 서브폴더를 동적으로 반환하는 헬퍼
 function getActiveSubFolder(docType) {
   const node = getActiveNode();
@@ -4221,6 +4421,9 @@ function getActiveSubFolder(docType) {
 updateNoteDate();
 renderTodoList(activeNoteTab);
 renderHomeTodo();
+// 달력 배지 렌더링 (folderTree 초기화 완료 후)
+buildCal(calYear, calMonth);
+loadHolidays();
 
 // 첫 실행(샘플 데이터) 또는 복원 시 기존 doc은 모두 읽음 처리
 // → 새로 AI 정리한 것만 뱃지 표시되도록
