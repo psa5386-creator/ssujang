@@ -128,11 +128,13 @@ const FB_LOADED_KEY = 'ssujang_fb_loaded';
 
 // ── Firestore 저장 (디바운스 800ms) ──
 let _saveTimer = null;
+let _lastSaveTime = 0;
 window._firestoreSave = function(data) {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(async () => {
     try {
-      await setDoc(DATA_DOC, { payload: JSON.stringify(data), updatedAt: Date.now() });
+      _lastSaveTime = Date.now();
+      await setDoc(DATA_DOC, { payload: JSON.stringify(data), updatedAt: _lastSaveTime });
     } catch(e) {
       console.warn('Firestore 저장 실패:', e);
     }
@@ -177,6 +179,9 @@ function attachSnapshot() {
   onSnapshot(DATA_DOC, (snap) => {
     if (_isFirst) { _isFirst = false; return; }
     if (!snap.exists()) return;
+    // 내가 저장한 것은 무시 (2초 이내)
+    const updatedAt = snap.data().updatedAt || 0;
+    if (Date.now() - updatedAt < 2000) return;
     try {
       const payload = JSON.parse(snap.data().payload);
       const localRaw = localStorage.getItem(STORAGE_KEY);
@@ -2316,13 +2321,62 @@ const STORAGE_KEY = 'ssujang_v1';
 // ── 다른 기기에서 변경 시 앱 상태 갱신 ──
 window._applyFirestoreUpdate = function(payload) {
   try {
-    if (payload.folderTree) folderTree = restoreFolderTree(payload.folderTree);
-    if (payload.trashStore) window._trashStore = payload.trashStore;
+    // 노드 시퀀스 복원
     if (payload._nodeIdSeq) _nodeIdSeq = payload._nodeIdSeq;
+
+    // folderTree / folderNotes / folderTrash 복원
+    if (payload.folderTree) {
+      const restored = restoreFolderTree(payload.folderTree);
+      folderTree = restored;
+      // folderNotes, folderTrash 재연결
+      folderTree.children.forEach(c => {
+        if (c.system && c.name === '노트') folderNotes = c;
+        if (c.system && c.name === '휴지통') folderTrash = c;
+      });
+      currentFolder = folderTree;
+      folderPathStack = [folderTree];
+    }
+    if (payload.trashStore) window._trashStore = payload.trashStore;
+    if (payload.activeNoteTab) activeNoteTab = payload.activeNoteTab;
+
+    // 노트탭 (우측 rtab) 갱신
+    if (payload.rtabOrder?.length) {
+      const rail = document.getElementById('rtab-scroll-area');
+      if (rail) {
+        rail.querySelectorAll('.rtab').forEach(t => t.remove());
+        payload.rtabOrder.forEach(name => {
+          const node = findNodeByName(folderNotes, name);
+          if (!node) return;
+          const tab = document.createElement('div');
+          tab.className = 'rtab';
+          setRtabName(tab, name);
+          tab.addEventListener('click', () => activateRtab(tab));
+          addRtabRename(tab);
+          addRtabCtxMenu(tab);
+          rail.appendChild(tab);
+        });
+        const allTabs = [...rail.querySelectorAll('.rtab')];
+        const activeTab = allTabs.find(t => getRtabName(t) === activeNoteTab) || allTabs[0];
+        if (activeTab) activeTab.classList.add('active');
+      }
+    }
+
+    // 좌측 패널 UI 전체 갱신
     renderTodoList(activeNoteTab);
+    renderMemoScreen?.();
+    renderMinutesScreen?.();
+    renderSchedule?.();
     renderHomeTodo();
+    renderFolderList();
     buildCal(calYear, calMonth);
-    showPopup('다른 기기에서 변경사항이 반영됐어요');
+    updateNoteDate();
+
+    // 우측 노트 입력창 갱신
+    const noteArea = document.querySelector('.note-input');
+    if (noteArea) {
+      const lines = getLines(activeNoteTab);
+      noteArea.value = lines.map(l => l.text).join('\n');
+    }
   } catch(e) {
     console.warn('Firestore 업데이트 적용 오류:', e);
   }
