@@ -2328,11 +2328,14 @@ window._applyFirestoreUpdate = function(payload) {
     if (payload.folderTree) {
       const restored = restoreFolderTree(payload.folderTree);
       folderTree = restored;
-      // folderNotes, folderTrash 재연결
+      // folderTrash 재연결
+      folderTrash = folderTree.children.find(c => c.name === '휴지통') || makeFolder('휴지통', { system: true });
+      // folderNotes 재구성 (프로젝트 노드의 _noteRef 수집)
+      const restoredNotes = [];
       folderTree.children.forEach(c => {
-        if (c.system && c.name === '노트') folderNotes = c;
-        if (c.system && c.name === '휴지통') folderTrash = c;
+        if (c._isProject && c._noteRef) restoredNotes.push(c._noteRef);
       });
+      folderNotes = makeFolder('노트', { system: true, children: restoredNotes });
       currentFolder = folderTree;
       folderPathStack = [folderTree];
     }
