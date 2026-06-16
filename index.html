@@ -104,6 +104,94 @@ self.addEventListener('fetch', e => {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500&family=Noto+Serif+KR:wght@300;400;500&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp }          from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, doc, getDoc, setDoc, onSnapshot }
+                                   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const firebaseConfig = {
+  apiKey:            'AIzaSyD0EzoGQ887DhWgP7XGd-_EFMsc8In8x9o',
+  authDomain:        'ssujang.firebaseapp.com',
+  projectId:         'ssujang',
+  storageBucket:     'ssujang.firebasestorage.app',
+  messagingSenderId: '330467059908',
+  appId:             '1:330467059908:web:b4f42c77d54f5734b48191',
+};
+
+const fbApp = initializeApp(firebaseConfig);
+const db    = getFirestore(fbApp);
+const DATA_DOC = doc(db, 'ssujang', 'main');
+const STORAGE_KEY = 'ssujang_v1';
+const FB_LOADED_KEY = 'ssujang_fb_loaded';
+
+// ── Firestore 저장 (디바운스 800ms) ──
+let _saveTimer = null;
+window._firestoreSave = function(data) {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(async () => {
+    try {
+      await setDoc(DATA_DOC, { payload: JSON.stringify(data), updatedAt: Date.now() });
+    } catch(e) {
+      console.warn('Firestore 저장 실패:', e);
+    }
+  }, 800);
+};
+
+// ── 앱 로드 시 Firestore → 로컬 동기화 ──
+(async () => {
+  const overlay = document.getElementById('fb-loading-overlay');
+
+  // 이미 이번 세션에 로드했으면 스킵 (무한 reload 방지)
+  if (sessionStorage.getItem(FB_LOADED_KEY)) {
+    if (overlay) overlay.style.display = 'none';
+    // 실시간 동기화만 붙이기
+    attachSnapshot();
+    return;
+  }
+
+  if (overlay) overlay.style.display = 'flex';
+  try {
+    const snap = await getDoc(DATA_DOC);
+    if (snap.exists()) {
+      const payload = JSON.parse(snap.data().payload);
+      // 로컬 설정(API 키 등)은 유지
+      const localRaw = localStorage.getItem(STORAGE_KEY);
+      const local = localRaw ? JSON.parse(localRaw) : {};
+      if (local.settings) payload.settings = { ...payload.settings, ...local.settings };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    }
+  } catch(e) {
+    console.warn('Firestore 불러오기 실패, 로컬 데이터 사용:', e);
+  }
+
+  sessionStorage.setItem(FB_LOADED_KEY, '1');
+  if (overlay) overlay.style.display = 'none';
+  attachSnapshot();
+})();
+
+// ── 실시간 동기화 ──
+function attachSnapshot() {
+  let _isFirst = true;
+  onSnapshot(DATA_DOC, (snap) => {
+    if (_isFirst) { _isFirst = false; return; }
+    if (!snap.exists()) return;
+    try {
+      const payload = JSON.parse(snap.data().payload);
+      const localRaw = localStorage.getItem(STORAGE_KEY);
+      const local = localRaw ? JSON.parse(localRaw) : {};
+      if (local.settings) payload.settings = { ...payload.settings, ...local.settings };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      if (typeof window._applyFirestoreUpdate === 'function') {
+        window._applyFirestoreUpdate(payload);
+      }
+    } catch(e) {
+      console.warn('실시간 동기화 오류:', e);
+    }
+  });
+}
+</script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -1388,6 +1476,17 @@ input, textarea { user-select: text; }
 </style>
 </head>
 <body>
+<!-- Firestore 로딩 오버레이 -->
+<div id="fb-loading-overlay" style="display:none;position:fixed;inset:0;z-index:99999;background:var(--bg);align-items:center;justify-content:center;flex-direction:column;gap:12px;">
+  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" style="animation:spin 1s linear infinite;">
+    <circle cx="12" cy="12" r="10" stroke-opacity="0.2"/>
+    <path d="M12 2a10 10 0 0 1 10 10" stroke="var(--accent)"/>
+  </svg>
+  <span style="font-family:var(--font-ui);font-size:13px;color:var(--text-secondary);">데이터 불러오는 중...</span>
+</div>
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
 <div class="app-frame">
 
   <!-- ════ 좌측 탭 레일 ════ -->
@@ -2214,7 +2313,20 @@ function makeId(prefix = 'n') { return prefix + (++_nodeIdSeq); }
 // ══════════════════════════════════════════
 const STORAGE_KEY = 'ssujang_v1';
 
-// 저장: folderTree + trashStore + 설정값 직렬화
+// ── 다른 기기에서 변경 시 앱 상태 갱신 ──
+window._applyFirestoreUpdate = function(payload) {
+  try {
+    if (payload.folderTree) folderTree = restoreFolderTree(payload.folderTree);
+    if (payload.trashStore) window._trashStore = payload.trashStore;
+    if (payload._nodeIdSeq) _nodeIdSeq = payload._nodeIdSeq;
+    renderTodoList(activeNoteTab);
+    renderHomeTodo();
+    buildCal(calYear, calMonth);
+    showPopup('다른 기기에서 변경사항이 반영됐어요');
+  } catch(e) {
+    console.warn('Firestore 업데이트 적용 오류:', e);
+  }
+};
 function saveToStorage() {
   try {
     const data = {
@@ -2240,6 +2352,16 @@ function saveToStorage() {
       usageStore: window._usageStore || { days: {} },
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // Firestore 동기화 (설정값 제외한 데이터만)
+    if (typeof window._firestoreSave === 'function') {
+      const cloudData = { ...data };
+      // API 키 등 민감한 설정은 클라우드에 올리지 않음
+      if (cloudData.settings) {
+        const { apiKey, gcalApiKey, ...safeSettings } = cloudData.settings;
+        cloudData.settings = safeSettings;
+      }
+      window._firestoreSave(cloudData);
+    }
     // 홈 화면 달력 배지 실시간 반영
     if (typeof buildCal === 'function') buildCal(calYear, calMonth);
   } catch(e) {
