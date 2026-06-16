@@ -2158,6 +2158,7 @@ function switchTab(name) {
   });
 
   if (name === 'setting') renderUsage();
+  if (name === 'home') renderHomeTodo();
   if (name === 'find') {
     setTimeout(() => {
       document.querySelector('#screen-find .find-input-field')?.focus();
