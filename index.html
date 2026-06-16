@@ -20,6 +20,7 @@
     display: 'standalone',
     background_color: '#edeae3',
     theme_color: '#edeae3',
+    launch_handler: { client_mode: 'navigate-new' },
     icons: [
       {
         src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='32' fill='%23edeae3'/%3E%3Ctext x='96' y='130' font-size='110' text-anchor='middle' font-family='sans-serif'%3E✏️%3C/text%3E%3C/svg%3E",
@@ -39,6 +40,31 @@
   link.rel   = 'manifest';
   link.href  = url;
   document.currentScript.after(link);
+
+  // PWA 독립창일 때 초기 창 크기 설정
+  const DEFAULT_W = 1280;
+  const DEFAULT_H = 800;
+  const isPWA = window.matchMedia('(display-mode: standalone)').matches
+             || window.navigator.standalone === true;
+  if (isPWA) {
+    // 첫 실행(창 크기가 기본값 근처)일 때만 리사이즈
+    const STORAGE_WIN = 'ssujang_win';
+    const saved = JSON.parse(localStorage.getItem(STORAGE_WIN) || 'null');
+    if (!saved) {
+      // 첫 실행 — 지정 크기로
+      window.resizeTo(DEFAULT_W, DEFAULT_H);
+      // 화면 중앙 이동
+      const left = Math.max(0, Math.round((screen.width  - DEFAULT_W) / 2));
+      const top  = Math.max(0, Math.round((screen.height - DEFAULT_H) / 2));
+      window.moveTo(left, top);
+    }
+    // 창 크기/위치 변경 시 저장 (재실행 시 복원용 힌트)
+    window.addEventListener('resize', () => {
+      localStorage.setItem(STORAGE_WIN, JSON.stringify({
+        w: window.outerWidth, h: window.outerHeight
+      }));
+    });
+  }
 
   // Service Worker 등록 (PWA 설치 필수 조건, https:// 에서만 동작)
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
@@ -5761,7 +5787,9 @@ trashConfirmCancel?.addEventListener('click', () => {
 trashConfirmOk?.addEventListener('click', () => {
   const sorted = [...pendingDeleteIndices].sort((a, b) => b - a);
   sorted.forEach(i => trashStore.splice(i, 1));
+  saveToStorage();
   renderTrash();
+  buildCal(calYear, calMonth);
   pendingDeleteIndices = [];
   trashConfirmOverlay.classList.remove('show');
 });
