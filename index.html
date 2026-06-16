@@ -4315,23 +4315,61 @@ if (_savedData && _savedData.folderTree) {
 // ── 달력 날짜별 데이터 수집 (folderTree 초기화 후 선언) ──
 function getCalDayData(dateKey) {
   const result = { todo: [], minutes: [], memo: [], schedule: [] };
+
+  // due 문자열("6/20 오후 6:00", "2026-06-20 18:00" 등)에서 날짜키(YYYY-MM-DD) 추출
+  function parseDueDate(due) {
+    if (!due) return '';
+    // YYYY-MM-DD 형식
+    const iso = due.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (iso) return iso[1];
+    // M/DD 또는 MM/DD 형식
+    const slash = due.match(/^(\d{1,2})\/(\d{1,2})/);
+    if (slash) {
+      const y = new Date().getFullYear();
+      const m = slash[1].padStart(2, '0');
+      const d = slash[2].padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+    return '';
+  }
+
+  // due 문자열에서 시간(HH:mm 24h) 추출
+  function parseDueTime(due) {
+    if (!due) return '';
+    // HH:mm 형식 (24h)
+    const hhmm = due.match(/(\d{1,2}):(\d{2})(?!\d)/);
+    if (!hhmm) return '';
+    let h = parseInt(hhmm[1]);
+    const m = hhmm[2];
+    // 오후/PM 처리
+    if (/(오후|PM|pm)/i.test(due) && h < 12) h += 12;
+    if (/(오전|AM|am)/i.test(due) && h === 12) h = 0;
+    return `${String(h).padStart(2, '0')}:${m}`;
+  }
+
   folderTree.children.forEach(proj => {
     if (!proj._isProject) return;
     const subs = proj._noteRef?.subFolders || {};
     Object.entries(subs).forEach(([type, folder]) => {
       if (!result[type]) return;
       (folder.children || []).forEach(doc => {
-        const created = (doc.createdAt || '').slice(0, 10);
-        const dt      = (doc.meta?.datetime || '').slice(0, 10);
-        const due     = (doc.meta?.due || '');
-        const matches = created === dateKey || dt === dateKey ||
-          (due && due.includes(dateKey.slice(5).replace('-', '/')));
-        if (matches) {
-          const time = doc.meta?.datetime
-            ? doc.meta.datetime.slice(11, 16)
-            : (doc.createdAt || '').slice(11, 16) || '';
-          result[type].push({ title: doc.name || '(제목 없음)', time });
+        const created  = (doc.createdAt || '').slice(0, 10);
+        const dt       = (doc.meta?.datetime || '').slice(0, 10);
+        const dueRaw   = doc.meta?.due || '';
+        const dueDate  = parseDueDate(dueRaw);
+
+        const matches  = created === dateKey || dt === dateKey || dueDate === dateKey;
+        if (!matches) return;
+
+        let time = '';
+        if (doc.meta?.datetime) {
+          // 일정: "2026-06-11 15:00" → "15:00"
+          time = doc.meta.datetime.slice(11, 16);
+        } else if (dueRaw) {
+          // 할일: "6/20 오후 6:00" → "18:00"
+          time = parseDueTime(dueRaw);
         }
+        result[type].push({ title: doc.name || '(제목 없음)', time });
       });
     });
   });
