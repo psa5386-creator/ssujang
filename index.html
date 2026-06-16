@@ -3726,7 +3726,6 @@ function renderHomeTodo() {
   const allItems = []; // { projName, text, item, doc }
   getAllDocsOfType('todo').forEach(({ doc, proj }) => {
     (doc.body || []).forEach(item => {
-      if (item.meta?.done) return;
       const due = item.meta?.due || '';
       if (!due) return; // 기한 없는 건 제외
 
